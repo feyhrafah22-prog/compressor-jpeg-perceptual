@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Compressor JPEG Perceptual</title>
+<style>
+  :root { --bg:#f6f5f2; --card:#fff; --ink:#1d1d1b; --muted:#6b6a66; --accent:#2f6f5e; --line:#e2e0da; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background:var(--bg); color:var(--ink); }
+  main { max-width: 900px; margin: 0 auto; padding: 32px 20px 60px; }
+  h1 { font-size: 1.5rem; margin: 0 0 6px; }
+  p.lead { color: var(--muted); margin: 0 0 24px; line-height: 1.5; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 20px; margin-bottom: 18px; }
+  h2 { font-size: 1rem; margin: 0 0 10px; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+  label.btn, button { background:#fff; color:var(--accent); border:1.5px solid var(--accent); border-radius:9px; padding:10px 16px; font: inherit; font-weight:600; cursor:pointer; }
+  button.primary { background: var(--accent); color:#fff; }
+  button:disabled { opacity: .45; cursor: default; }
+  input[type=file] { display: none; }
+  .list { margin-top: 14px; font-size: .92rem; color: var(--muted); max-height: 160px; overflow:auto; line-height:1.6; white-space: pre-line; }
+  .dest { margin-top: 12px; font-size: .92rem; color: var(--ink); }
+  .dest em { color: var(--muted); font-style: normal; }
+  .controls { display: flex; flex-wrap: wrap; gap: 18px; align-items: end; margin-top: 18px; }
+  label.field { display: flex; flex-direction: column; gap: 6px; font-size: .88rem; color: var(--muted); }
+  input[type=range] { width: 220px; }
+  select { padding: 7px 10px; border-radius: 8px; border: 1px solid var(--line); font: inherit; background: #fff; }
+  .bar { height: 10px; background: #e9e7e1; border-radius: 6px; overflow: hidden; margin-top: 14px; }
+  .bar > div { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+  .status { color: var(--muted); margin-top: 12px; min-height: 1.2em; line-height: 1.5; }
+  .err { color: #a03a2c; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+  .stat { background: #fbfbfa; border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+  .stat b { display: block; font-size: 1.2rem; }
+  .stat span { color: var(--muted); font-size: .85rem; }
+  .note { color: var(--muted); font-size: .88rem; line-height: 1.5; margin-top: 14px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Compressor JPEG Perceptual em lote</h1>
+  <p class="lead">Escolha uma pasta de fotos JPEG (ou vários arquivos). Cada foto é comprimida com a menor qualidade que mantém a aparência do original (SSIM). Tudo acontece no seu navegador: as fotos não são enviadas para nenhum servidor.</p>
+
+  <section class="card">
+    <h2>1. Fotos de origem</h2>
+    <div class="row">
+      <label class="btn" for="folder">Escolher pasta</label>
+      <label class="btn" for="files">Escolher arquivos</label>
+    </div>
+    <input id="folder" type="file" webkitdirectory directory multiple accept=".jpg,.jpeg,image/jpeg">
+    <input id="files" type="file" multiple accept=".jpg,.jpeg,image/jpeg">
+    <div id="list" class="list"></div>
+  </section>
+
+  <section class="card">
+    <h2>2. Onde salvar</h2>
+    <div class="row">
+      <button id="pickDest" type="button">Escolher pasta de destino</button>
+    </div>
+    <div id="dest" class="dest"></div>
+    <p id="destNote" class="note" hidden></p>
+  </section>
+
+  <section class="card">
+    <h2>3. Compressão</h2>
+    <div class="controls">
+      <label class="field">Fidelidade mínima (SSIM)
+        <span><input id="target" type="range" min="0.95" max="0.995" step="0.005" value="0.98"> <span id="targetVal">0.980</span></span>
+      </label>
+      <label class="field">Tamanho máximo do lado maior
+        <select id="maxSide">
+          <option value="0">Original (sem redimensionar)</option>
+          <option value="3000">3000 px</option>
+          <option value="2000">2000 px</option>
+          <option value="1200">1200 px</option>
+        </select>
+      </label>
+      <label class="field">Processamento paralelo
+        <select id="threads">
+          <option value="1">1 (mais leve)</option>
+          <option value="2">2</option>
+          <option value="3" selected>3 (mais rápido)</option>
+        </select>
+      </label>
+      <button id="go" class="primary" disabled>Comprimir</button>
+    </div>
+    <div class="bar"><div id="bar"></div></div>
+    <div id="status" class="status"></div>
+  </section>
+
+  <section id="result" class="card" hidden>
+    <div class="stats">
+      <div class="stat"><b id="sCount"></b><span>Fotos processadas</span></div>
+      <div class="stat"><b id="sBefore"></b><span>Tamanho original</span></div>
+      <div class="stat"><b id="sAfter"></b><span>Tamanho comprimido</span></div>
+      <div class="stat"><b id="sSaving"></b><span>Redução total</span></div>
+    </div>
+    <p class="note" id="resultNote"></p>
+  </section>
+</main>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const go = $('go'), statusEl = $('status'), listEl = $('list'), bar = $('bar');
+  const target = $('target'), maxSideSel = $('maxSide'), threadsSel = $('threads');
+  const pickBtn = $('pickDest'), destEl = $('dest'), destNote = $('destNote');
+  let items = [];           // { file, path }
+  let destHandle = null;    // FileSystemDirectoryHandle (escolhido pelo usuario)
+
+  target.addEventListener('input', () => $('targetVal').textContent = Number(target.value).toFixed(3));
+
+  function fmt(bytes) {
+    return bytes > 1048576 ? (bytes / 1048576).toFixed(2) + ' MB' : (bytes / 1024).toFixed(0) + ' KB';
+  }
+
+  // ---------- destino ----------
+  const canPickDest = typeof window.showDirectoryPicker === 'function';
+  function renderDest() {
+    if (destHandle) {
+      destEl.innerHTML = '';
+      destEl.append('Destino: pasta ', Object.assign(document.createElement('b'), { textContent: destHandle.name }));
+    } else {
+      destEl.innerHTML = '<em>Destino: arquivo .zip para baixar (o navegador decide a pasta de downloads).</em>';
+    }
+  }
+  if (!canPickDest) {
+    pickBtn.hidden = true;
+    destNote.hidden = false;
+    destNote.textContent = 'Este navegador ou esta página não permite escolher a pasta de destino. Para escolher, abra esta ferramenta como arquivo no seu computador, no Chrome ou Edge.';
+  }
+  pickBtn.addEventListener('click', async () => {
+    try {
+      destHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+    } catch (e) {
+      if (e && e.name === 'AbortError') return;
+      destNote.hidden = false;
+      destNote.textContent = 'Não consegui acessar a pasta de destino: ' + (e.message || e);
+      return;
+    }
+    renderDest();
+  });
+  renderDest();
+
+  async function writeToDir(root, relPath, data) {
+    const parts = relPath.split('/');
+    const name = parts.pop();
+    let dir = root;
+    for (const p of parts) dir = await dir.getDirectoryHandle(p, { create: true });
+    const fh = await dir.getFileHandle(name, { create: true });
+    const w = await fh.createWritable();
+    await w.write(data);
+    await w.close();
+  }
+
+  // ---------- origem ----------
+  function setFiles(fileList) {
+    items = [];
+    for (const f of fileList) {
+      if (!/\.(jpe?g)$/i.test(f.name)) continue;
+      items.push({ file: f, path: f.webkitRelativePath || f.name });
+    }
+    items.sort((a, b) => a.path.localeCompare(b.path));
+    const total = items.reduce((s, i) => s + i.file.size, 0);
+    listEl.textContent = items.length
+      ? `${items.length} foto(s) JPEG — ${fmt(total)}\n` + items.slice(0, 200).map(i => i.path).join('\n') + (items.length > 200 ? `\n… e mais ${items.length - 200}` : '')
+      : 'Nenhum JPEG encontrado nesta seleção.';
+    go.disabled = items.length === 0;
+    $('result').hidden = true;
+    statusEl.textContent = '';
+  }
+  $('folder').addEventListener('change', e => setFiles(e.target.files));
+  $('files').addEventListener('change', e => setFiles(e.target.files));
+
+  // ---------- compressao (mesma logica nos workers e na thread principal) ----------
+  // Codigo de compressao. Roda num Worker ou, se nao der, na thread principal.
+  function workerMain(self) {
+    const C1 = (0.01 * 255) ** 2, C2 = (0.03 * 255) ** 2, R = 3;
+    function lumaOf(data, n) {
+      const y = new Float64Array(n);
+      for (let i = 0, p = 0; i < n; i++, p += 4) y[i] = 0.299 * data[p] + 0.587 * data[p + 1] + 0.114 * data[p + 2];
+      return y;
+    }
+    function ssim(a, b, w, h) {
+      const W = w + 1;
+      const I = [0, 1, 2, 3, 4].map(() => new Float64Array(W * (h + 1)));
+      for (let y = 0; y < h; y++) {
+        let s0 = 0, s1 = 0, s2 = 0, s3 = 0, s4 = 0;
+        for (let x = 0; x < w; x++) {
+          const i = y * w + x, va = a[i], vb = b[i];
+          s0 += va; s1 += vb; s2 += va * va; s3 += vb * vb; s4 += va * vb;
+          const k = (y + 1) * W + (x + 1), up = y * W + (x + 1);
+          I[0][k] = I[0][up] + s0; I[1][k] = I[1][up] + s1; I[2][k] = I[2][up] + s2;
+          I[3][k] = I[3][up] + s3; I[4][k] = I[4][up] + s4;
+        }
+      }
+      const rect = (J, x0, y0, x1, y1) => J[y1 * W + x1] - J[y0 * W + x1] - J[y1 * W + x0] + J[y0 * W + x0];
+      let total = 0;
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        const x0 = Math.max(0, x - R), x1 = Math.min(w, x + R + 1);
+        const y0 = Math.max(0, y - R), y1 = Math.min(h, y + R + 1);
+        const n = (x1 - x0) * (y1 - y0);
+        const ma = rect(I[0], x0, y0, x1, y1) / n, mb = rect(I[1], x0, y0, x1, y1) / n;
+        const va = rect(I[2], x0, y0, x1, y1) / n - ma * ma;
+        const vb = rect(I[3], x0, y0, x1, y1) / n - mb * mb;
+        const cov = rect(I[4], x0, y0, x1, y1) / n - ma * mb;
+        total += ((2 * ma * mb + C1) * (2 * cov + C2)) / ((ma * ma + mb * mb + C1) * (va + vb + C2));
+      }
+      return total / (w * h);
+    }
+    function scaled(src, sw, sh, maxSide) {
+      const m = Math.max(sw, sh);
+      const s = maxSide && m > maxSide ? maxSide / m : 1;
+      const c = new OffscreenCanvas(Math.max(1, Math.round(sw * s)), Math.max(1, Math.round(sh * s)));
+      c.getContext('2d').drawImage(src, 0, 0, c.width, c.height);
+      return c;
+    }
+    self.onmessage = async (e) => {
+      const { id, file, target, maxSide } = e.data;
+      try {
+        const bmp = await createImageBitmap(file);
+        const sw = bmp.width, sh = bmp.height;
+        const metric = scaled(bmp, sw, sh, 1200);
+        const mw = metric.width, mh = metric.height;
+        const refLuma = lumaOf(metric.getContext('2d').getImageData(0, 0, mw, mh).data, mw * mh);
+        const probe = new OffscreenCanvas(mw, mh);
+        const evalQ = async (q) => {
+          const blob = await metric.convertToBlob({ type: 'image/jpeg', quality: q / 100 });
+          const bb = await createImageBitmap(blob);
+          const pc = probe.getContext('2d');
+          pc.clearRect(0, 0, mw, mh);
+          pc.drawImage(bb, 0, 0);
+          bb.close();
+          return ssim(refLuma, lumaOf(pc.getImageData(0, 0, mw, mh).data, mw * mh), mw, mh);
+        };
+        let lo = 35, hi = 95, best = 95, bestScore = null;
+        while (lo <= hi) {
+          const mid = (lo + hi) >> 1;
+          const score = await evalQ(mid);
+          if (score >= target) { best = mid; bestScore = score; hi = mid - 1; }
+          else lo = mid + 1;
+        }
+        if (bestScore === null) bestScore = await evalQ(best);
+        const finalC = scaled(bmp, sw, sh, maxSide);
+        bmp.close();
+        const out = await finalC.convertToBlob({ type: 'image/jpeg', quality: best / 100 });
+        const buf = await out.arrayBuffer();
+        self.postMessage({ id, ok: true, buf, q: best, score: bestScore, reached: bestScore >= target }, [buf]);
+      } catch (err) {
+        self.postMessage({ id, ok: false, error: String((err && err.message) || err) });
+      }
+    };
+  }
+
+  // Workers: cada um executa o mesmo codigo em outra thread.
+  function runInMain(job) {
+    return new Promise((resolve, reject) => {
+      const sc = {};
+      sc.postMessage = m => (m.ok ? resolve(m) : reject(new Error(m.error)));
+      workerMain(sc);
+      sc.onmessage({ data: job });
+    });
+  }
+  function makeWorkers(n) {
+    const url = URL.createObjectURL(new Blob(['(' + workerMain.toString() + ')(self)'], { type: 'text/javascript' }));
+    const ws = [];
+    for (let i = 0; i < n; i++) {
+      try { ws.push(new Worker(url)); } catch (e) { break; }
+    }
+    return ws;
+  }
+  function runOnWorker(worker, job) {
+    return new Promise((resolve, reject) => {
+      const onMsg = e => {
+        worker.removeEventListener('message', onMsg);
+        worker.removeEventListener('error', onErr);
+        e.data.ok ? resolve(e.data) : reject(new Error(e.data.error));
+      };
+      const onErr = ev => {
+        worker.removeEventListener('message', onMsg);
+        worker.removeEventListener('error', onErr);
+        reject(new Error(ev.message || 'erro no worker'));
+      };
+      worker.addEventListener('message', onMsg);
+      worker.addEventListener('error', onErr);
+      worker.postMessage({ id: job.idx, file: job.file, target: job.target, maxSide: job.maxSide });
+    });
+  }
+
+  // ---------- processamento ----------
+  function saveZipFallback(blob, filename) {
+    const hasClaude = typeof window.claude !== 'undefined' && window.claude && typeof window.claude.use === 'function';
+    return (async () => {
+      const dl = hasClaude ? await window.claude.use('downloads') : null;
+      if (dl) {
+        try { await dl.save({ filename, data: blob }); return 'saved'; }
+        catch (e) { return 'declined'; }
+      }
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob); a.download = filename;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+      return 'fallback';
+    })();
+  }
+
+  const CRC_TABLE = (() => {
+    const t = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; }
+    return t;
+  })();
+  function crc32(u8) {
+    let c = 0xFFFFFFFF;
+    for (let i = 0; i < u8.length; i++) c = CRC_TABLE[(c ^ u8[i]) & 0xFF] ^ (c >>> 8);
+    return (c ^ 0xFFFFFFFF) >>> 0;
+  }
+  function buildZip(entries) {
+    const enc = new TextEncoder(), parts = [], central = [];
+    let offset = 0;
+    for (const e of entries) {
+      const name = enc.encode(e.name), crc = crc32(e.data), size = e.data.length;
+      const lh = new DataView(new ArrayBuffer(30));
+      lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true); lh.setUint16(6, 0x0800, true);
+      lh.setUint16(12, 0x21, true); lh.setUint32(14, crc, true); lh.setUint32(18, size, true); lh.setUint32(22, size, true);
+      lh.setUint16(26, name.length, true);
+      parts.push(new Uint8Array(lh.buffer), name, e.data);
+      const ch = new DataView(new ArrayBuffer(46));
+      ch.setUint32(0, 0x02014b50, true); ch.setUint16(4, 20, true); ch.setUint16(6, 20, true); ch.setUint16(8, 0x0800, true);
+      ch.setUint16(14, 0x21, true); ch.setUint32(16, crc, true); ch.setUint32(20, size, true); ch.setUint32(24, size, true);
+      ch.setUint16(28, name.length, true); ch.setUint32(42, offset, true);
+      central.push(new Uint8Array(ch.buffer), name);
+      offset += 30 + name.length + size;
+    }
+    const cdSize = central.reduce((s, p) => s + p.length, 0);
+    const end = new DataView(new ArrayBuffer(22));
+    end.setUint32(0, 0x06054b50, true); end.setUint16(8, entries.length, true); end.setUint16(10, entries.length, true);
+    end.setUint32(12, cdSize, true); end.setUint32(16, offset, true);
+    return new Blob([...parts, ...central, new Uint8Array(end.buffer)], { type: 'application/zip' });
+  }
+
+  go.addEventListener('click', async () => {
+    if (!items.length) return;
+    go.disabled = true;
+    $('result').hidden = true;
+    const targetSsim = Number(target.value), maxSide = Number(maxSideSel.value);
+    const threads = Number(threadsSel.value);
+    const writing = !!destHandle;
+    const entries = [];
+    let totalBefore = 0, totalAfter = 0, done = 0, missed = 0, writeErrors = 0;
+    const failed = [];
+    const t0 = performance.now();
+
+    let workers = [];
+    try { workers = makeWorkers(threads); } catch (e) { workers = []; }
+
+    const handle = async (idx, res) => {
+      const { file, path } = items[idx];
+      let data = new Uint8Array(res.buf);
+      if (data.length >= file.size && maxSide === 0) data = new Uint8Array(await file.arrayBuffer());
+      totalBefore += file.size; totalAfter += data.length;
+      if (!res.reached) missed++;
+      if (writing) {
+        try { await writeToDir(destHandle, path, data); } catch (e) { writeErrors++; failed.push(path + ' (' + (e.message || e) + ')'); }
+      } else {
+        entries.push({ name: path, data });
+      }
+    };
+
+    const next = { i: 0 };
+    const loop = async (worker) => {
+      while (next.i < items.length) {
+        const idx = next.i++;
+        const { path } = items[idx];
+        statusEl.textContent = `Comprimindo ${Math.min(done + 1, items.length)} de ${items.length}: ${path}`;
+        const job = { idx, file: items[idx].file, target: targetSsim, maxSide };
+        try {
+          let res;
+          if (worker) {
+            try { res = await runOnWorker(worker, job); }
+            catch (e) { res = await runInMain(job); } // worker falhou: usa a thread principal
+          } else {
+            res = await runInMain(job);
+          }
+          await handle(idx, res);
+        } catch (e) {
+          failed.push(path);
+        }
+        done++;
+        bar.style.width = (done / items.length * 100) + '%';
+      }
+    };
+
+    try {
+      if (workers.length) {
+        await Promise.all(workers.map(w => loop(w)));
+        workers.forEach(w => w.terminate());
+      } else {
+        await loop(null);
+      }
+      if (!done) throw new Error('nenhuma foto foi processada');
+
+      const secs = ((performance.now() - t0) / 1000).toFixed(1);
+      $('sCount').textContent = `${items.length - failed.length}`;
+      $('sBefore').textContent = fmt(totalBefore);
+      $('sAfter').textContent = fmt(totalAfter);
+      $('sSaving').textContent = totalBefore ? '-' + Math.round((1 - totalAfter / totalBefore) * 100) + '%' : '—';
+      const notes = [`Tempo: ${secs} s com ${workers.length || 1} thread(s).`];
+
+      if (writing) {
+        statusEl.textContent = 'Pronto.';
+        notes.push(`Arquivos gravados em "${destHandle.name}".`);
+      } else if (entries.length === 1) {
+        const name = entries[0].name.split('/').pop();
+        const outcome = await saveZipFallback(new Blob([entries[0].data], { type: 'image/jpeg' }), name);
+        statusEl.textContent = outcome === 'declined' ? 'Download não concluído.' : `Pronto: ${name}`;
+      } else if (entries.length) {
+        const outcome = await saveZipFallback(buildZip(entries), 'fotos_comprimidas.zip');
+        statusEl.textContent = outcome === 'declined' ? 'Download não concluído.' : 'Pronto: fotos_comprimidas.zip';
+        if (outcome === 'fallback') notes.push('O arquivo foi enviado para a pasta de downloads do navegador.');
+      }
+      if (missed) notes.push(`${missed} foto(s) não atingiram a fidelidade ${targetSsim.toFixed(3)} na maior qualidade; foram salvas em qualidade 95.`);
+      if (failed.length) notes.push(`Não consegui salvar/processar: ${failed.join(', ')}`);
+      $('resultNote').textContent = notes.join(' ');
+      $('result').hidden = false;
+    } catch (err) {
+      statusEl.innerHTML = '';
+      const s = document.createElement('span'); s.className = 'err';
+      s.textContent = 'Erro: ' + (err && err.message ? err.message : err);
+      statusEl.appendChild(s);
+    } finally {
+      bar.style.width = '100%';
+      go.disabled = false;
+    }
+  });
+})();
+</script>
+</body>
+</html>
