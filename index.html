@@ -7,6 +7,7 @@
 <style>
   :root { --bg:#f6f5f2; --card:#fff; --ink:#1d1d1b; --muted:#6b6a66; --accent:#2f6f5e; --line:#e2e0da; }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   body { margin:0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background:var(--bg); color:var(--ink); }
   main { max-width: 900px; margin: 0 auto; padding: 32px 20px 60px; }
   h1 { font-size: 1.5rem; margin: 0 0 6px; }
@@ -39,7 +40,7 @@
 <body>
 <main>
   <h1>Compressor JPEG Perceptual em lote</h1>
-  <p class="lead">Escolha uma pasta de fotos JPEG (ou vários arquivos). Cada foto é comprimida com a menor qualidade que mantém a aparência do original (SSIM). Tudo acontece no seu navegador: as fotos não são enviadas para nenhum servidor.</p>
+  <p class="lead">Escolha uma pasta de fotos (JPEG, PNG ou HEIC) ou vários arquivos. Cada foto é comprimida com a menor qualidade que mantém a aparência do original (SSIM). Tudo acontece no seu navegador: as fotos não são enviadas para nenhum servidor.</p>
 
   <section class="card">
     <h2>1. Fotos de origem</h2>
@@ -47,8 +48,8 @@
       <label class="btn" for="folder">Escolher pasta</label>
       <label class="btn" for="files">Escolher arquivos</label>
     </div>
-    <input id="folder" type="file" webkitdirectory directory multiple accept=".jpg,.jpeg,image/jpeg">
-    <input id="files" type="file" multiple accept=".jpg,.jpeg,image/jpeg">
+    <input id="folder" type="file" webkitdirectory directory multiple accept=".jpg,.jpeg,.png,.heic,.heif,image/jpeg,image/png,image/heic,image/heif">
+    <input id="files" type="file" multiple accept=".jpg,.jpeg,.png,.heic,.heif,image/jpeg,image/png,image/heic,image/heif">
     <div id="list" class="list"></div>
   </section>
 
@@ -64,7 +65,15 @@
   <section class="card">
     <h2>3. Compressão</h2>
     <div class="controls">
-      <label class="field">Fidelidade mínima (SSIM)
+      <label class="field">Preset
+        <select id="preset">
+          <option value="0.97">Web (SSIM 0,970)</option>
+          <option value="0.98" selected>Padrão (SSIM 0,980)</option>
+          <option value="0.99">Máxima fidelidade (SSIM 0,990)</option>
+          <option value="custom">Personalizado</option>
+        </select>
+      </label>
+      <label class="field" id="customField" hidden>Fidelidade mínima (SSIM)
         <span><input id="target" type="range" min="0.95" max="0.995" step="0.005" value="0.98"> <span id="targetVal">0.980</span></span>
       </label>
       <label class="field">Tamanho máximo do lado maior
@@ -104,11 +113,25 @@
   const $ = id => document.getElementById(id);
   const go = $('go'), statusEl = $('status'), listEl = $('list'), bar = $('bar');
   const target = $('target'), maxSideSel = $('maxSide'), threadsSel = $('threads');
+  const presetSel = $('preset'), customField = $('customField');
   const pickBtn = $('pickDest'), destEl = $('dest'), destNote = $('destNote');
-  let items = [];           // { file, path }
+  let items = [];           // { file, path, isJpeg }
   let destHandle = null;    // FileSystemDirectoryHandle (escolhido pelo usuario)
 
   target.addEventListener('input', () => $('targetVal').textContent = Number(target.value).toFixed(3));
+
+  // ---------- presets ----------
+  function applyPreset() {
+    if (presetSel.value === 'custom') {
+      customField.hidden = false;
+    } else {
+      customField.hidden = true;
+      target.value = presetSel.value;
+      $('targetVal').textContent = Number(target.value).toFixed(3);
+    }
+  }
+  presetSel.addEventListener('change', applyPreset);
+  applyPreset();
 
   function fmt(bytes) {
     return bytes > 1048576 ? (bytes / 1048576).toFixed(2) + ' MB' : (bytes / 1024).toFixed(0) + ' KB';
@@ -157,20 +180,49 @@
   function setFiles(fileList) {
     items = [];
     for (const f of fileList) {
-      if (!/\.(jpe?g)$/i.test(f.name)) continue;
-      items.push({ file: f, path: f.webkitRelativePath || f.name });
+      if (!/\.(jpe?g|png|heic|heif)$/i.test(f.name)) continue;
+      items.push({ file: f, path: f.webkitRelativePath || f.name, isJpeg: /\.jpe?g$/i.test(f.name) });
     }
     items.sort((a, b) => a.path.localeCompare(b.path));
     const total = items.reduce((s, i) => s + i.file.size, 0);
+    const kinds = { JPEG: 0, PNG: 0, HEIC: 0 };
+    for (const i of items) {
+      if (/\.jpe?g$/i.test(i.path)) kinds.JPEG++;
+      else if (/\.png$/i.test(i.path)) kinds.PNG++;
+      else kinds.HEIC++;
+    }
+    const summary = Object.entries(kinds).filter(([, n]) => n).map(([k, n]) => `${n} ${k}`).join(', ');
     listEl.textContent = items.length
-      ? `${items.length} foto(s) JPEG — ${fmt(total)}\n` + items.slice(0, 200).map(i => i.path).join('\n') + (items.length > 200 ? `\n… e mais ${items.length - 200}` : '')
-      : 'Nenhum JPEG encontrado nesta seleção.';
+      ? `${items.length} foto(s) — ${summary} — ${fmt(total)}\n` + items.slice(0, 200).map(i => i.path).join('\n') + (items.length > 200 ? `\n… e mais ${items.length - 200}` : '')
+      : 'Nenhuma foto JPEG, PNG ou HEIC encontrada nesta seleção.';
     go.disabled = items.length === 0;
     $('result').hidden = true;
     statusEl.textContent = '';
   }
   $('folder').addEventListener('change', e => setFiles(e.target.files));
   $('files').addEventListener('change', e => setFiles(e.target.files));
+
+  // ---------- HEIC (convertido para JPEG antes da compressao) ----------
+  let heicLib = null;
+  function loadHeic() {
+    if (heicLib) return heicLib;
+    heicLib = new Promise((resolve, reject) => {
+      if (window.heic2any) return resolve(window.heic2any);
+      const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js';
+      s.onload = () => resolve(window.heic2any);
+      s.onerror = () => { heicLib = null; reject(new Error('não consegui carregar o conversor de HEIC (verifique a conexão)')); };
+      document.head.appendChild(s);
+    });
+    return heicLib;
+  }
+  async function toJpegFile(item) {
+    if (item.isJpeg || !/\.(heic|heif)$/i.test(item.file.name)) return item.file;
+    const h2a = await loadHeic();
+    const out = await h2a({ blob: item.file, toType: 'image/jpeg', quality: 1 });
+    const blob = Array.isArray(out) ? out[0] : out;
+    return new File([blob], item.file.name, { type: 'image/jpeg' });
+  }
 
   // ---------- compressao (mesma logica nos workers e na thread principal) ----------
   // Codigo de compressao. Roda num Worker ou, se nao der, na thread principal.
@@ -212,7 +264,10 @@
       const m = Math.max(sw, sh);
       const s = maxSide && m > maxSide ? maxSide / m : 1;
       const c = new OffscreenCanvas(Math.max(1, Math.round(sw * s)), Math.max(1, Math.round(sh * s)));
-      c.getContext('2d').drawImage(src, 0, 0, c.width, c.height);
+      const g = c.getContext('2d');
+      g.fillStyle = '#fff';                       // fundo branco para PNG com transparencia
+      g.fillRect(0, 0, c.width, c.height);
+      g.drawImage(src, 0, 0, c.width, c.height);
       return c;
     }
     self.onmessage = async (e) => {
@@ -346,7 +401,7 @@
     const threads = Number(threadsSel.value);
     const writing = !!destHandle;
     const entries = [];
-    let totalBefore = 0, totalAfter = 0, done = 0, missed = 0, writeErrors = 0;
+    let totalBefore = 0, totalAfter = 0, done = 0, missed = 0;
     const failed = [];
     const t0 = performance.now();
 
@@ -354,15 +409,17 @@
     try { workers = makeWorkers(threads); } catch (e) { workers = []; }
 
     const handle = async (idx, res) => {
-      const { file, path } = items[idx];
+      const { file, path, isJpeg } = items[idx];
+      const outPath = path.replace(/\.(png|heic|heif|jpe?g)$/i, '.jpg');
       let data = new Uint8Array(res.buf);
-      if (data.length >= file.size && maxSide === 0) data = new Uint8Array(await file.arrayBuffer());
+      // So mantem o original se for JPEG e a compressao nao reduziu nada.
+      if (isJpeg && data.length >= file.size && maxSide === 0) data = new Uint8Array(await file.arrayBuffer());
       totalBefore += file.size; totalAfter += data.length;
       if (!res.reached) missed++;
       if (writing) {
-        try { await writeToDir(destHandle, path, data); } catch (e) { writeErrors++; failed.push(path + ' (' + (e.message || e) + ')'); }
+        try { await writeToDir(destHandle, outPath, data); } catch (e) { failed.push(outPath + ' (' + (e.message || e) + ')'); }
       } else {
-        entries.push({ name: path, data });
+        entries.push({ name: outPath, data });
       }
     };
 
@@ -372,7 +429,15 @@
         const idx = next.i++;
         const { path } = items[idx];
         statusEl.textContent = `Comprimindo ${Math.min(done + 1, items.length)} de ${items.length}: ${path}`;
-        const job = { idx, file: items[idx].file, target: targetSsim, maxSide };
+        let job;
+        try {
+          job = { idx, file: await toJpegFile(items[idx]), target: targetSsim, maxSide };
+        } catch (e) {
+          failed.push(path + ' (' + (e.message || e) + ')');
+          done++;
+          bar.style.width = (done / items.length * 100) + '%';
+          continue;
+        }
         try {
           let res;
           if (worker) {
